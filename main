@@ -11,11 +11,11 @@ live = pd.read_csv("live1.csv")
 pop = pd.read_csv("pop1.csv")
 gdp = pd.read_csv("gdp.csv")
 
-crop = crop.append(live)
-
 #for beehives it may mean the number of hives and not bees
-crop['Value'] = np.where(crop['Unit'] == '1000 Head',crop['Value'] * 1000,crop['Value'])
-crop["Unit"] = 'Head'
+live['Value'] = np.where(live['Unit'] == '1000 Head',live['Value'] * 1000,live['Value'])
+live["Unit"] = 'Head'
+
+crop = crop.append(live)
 
 gdp.drop(["Indicator Code","Indicator Name"],axis=1,inplace=True)
 gdp = gdp.melt(id_vars=["Country Name","Country Code"],var_name="Year",value_name="GDP")
@@ -111,4 +111,4 @@ crop["Agg"] = crop['Area'].apply(lambda x: 1 if x in aggregated_countries else 0
 #anche le coltivazioni sembrano aver subito tutte un calo -> la diminuzione dei raccolti causa il calo di GDP o
 #il contrario? Un gdp scarso un anno porta a una riduzione delle coltivazioni e quindi il gdp diminuirà di nuovo?
 
-crop.to_csv('farming.csv')
+crop.to_csv('farming.csv',index=False)
