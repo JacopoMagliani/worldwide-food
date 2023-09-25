@@ -1,0 +1,455 @@
+---
+title: "Progetto food-gdp"
+author: "Myself"
+date: "19/11/2022"
+output: html_document
+---
+Study the data of the country
+Correlation matrix to see correlation among predictors
+Use linear model to get VIF and extract a subset of features
+Use GAM as baseline
+Use Arima
+Use Arimax looking for the feature that gets the lowest AIC
+
+
+```{r}
+library(readxl)
+library(lmtest) 
+library(forecast)
+library(DIMORA)
+library(fastDummies)
+library(dplyr)
+library("xts")
+library(ggplot2)
+library(corrplot)
+library(car)
+library(forcats)
+library(tseries)
+library(lattice)
+library(gam)
+farming <- read.csv(file = './farming.csv')
+```
+
+
+```{r}
+#return year-gdp for a specific country
+country_gdp <- function(country_name){
+  country_subset = farming[farming$Area==country_name,]
+  Year = c(min(country_subset$Year):max(country_subset$Year))
+  gdp = c()
+  for (y in Year){
+    gdp = append(gdp,country_subset[country_subset$Year==y,]$GDP[1])
+  }
+  return(data.frame(Year,gdp))
+}
+#return year-pop for a specific country
+country_pop <- function(country_name){
+  country_subset = farming[farming$Area==country_name,]
+  Year = c(min(country_subset$Year):max(country_subset$Year))
+  pop = c()
+  for (y in Year){
+    pop = append(pop,country_subset[country_subset$Year==y,]$Pop[1])
+  }
+  return(data.frame(Year,pop))
+}
+#return item dataframe for a specific country
+country_item <- function(country_name,crop){
+  country_subset = farming[(farming$Area==country_name)&(farming$Item==crop),]
+  return(data.frame(country_subset$Year,country_subset$Value))
+}
+#return subset for a country
+country_crops <- function(country_name){
+  return(farming[farming$Area==country_name,])
+}
+#return change subset for a specific country and a specific item if given
+country_item_increase <- function(country_name,crop=""){
+  if (crop==""){
+    country_subset = farming[farming$Area==country_name,]
+  }
+  else{
+    country_subset = farming[(farming$Area==country_name)&(farming$Item==crop),]
+  }
+  years = c(min(country_subset$Year):max(country_subset$Year))
+  change = c()
+  for (y in years){
+    change = append(change,mean(country_subset[country_subset$Year==y,]$Increase))
+  }
+  return(data.frame(years,change))
+}
+#return dataframe of the country with aggregate value by year and type,gpd,pop
+agg_item<-function(country){
+  subfarming <- farming[farming$Area==country,]
+  subfarming<-aggregate(Value ~ Year+type, data=subfarming, FUN=sum)
+  subfarming <- dummy_cols(subfarming)
+  crops_types <-subfarming$type[!duplicated(subfarming$type)]
+  names(subfarming)<-c("Year","type","Value",crops_types)
+  for (i in crops_types){
+    subfarming[subfarming[names(subfarming)==i]==1,i] = subfarming[subfarming[names(subfarming)==i]==1,"Value"]
+  }
+  df <- data.frame(c(min(subfarming$Year):max(subfarming$Year)))
+  names(df)<-"Year"
+  for (i in crops_types){
+    df2=(subfarming[subfarming[names(subfarming)==i]!=0,c("Year",i)])
+    df<-merge(df,df2,by="Year",all.x = TRUE)
+    }
+  df[is.na(df)] <- 0
+  df=merge.data.frame(df,country_gdp(country),by="Year")
+  df=merge.data.frame(df,country_pop(country),by="Year")
+  colnames(df)[colnames(df) == 'fruit_vegetables'] <- 'fr_veg'
+  colnames(df)[colnames(df) == 'mushrooms'] <- 'ms'
+  df$Year<-as.Date(as.character(df$Year),format="%Y")
+  return(df)
+}
+#Plot the correlation matrix for the dataset of the country given
+corcountry <- function(country_subset){
+  cor=cor(country_subset[,-1])
+  corrplot(cor,is.corr = TRUE,type="upper",title=comment(country_subset),mar=c(0,0,1,0))
+  corrplot(cor,is.corr = TRUE,type="upper",title=comment(country_subset),method = 'number',number.cex = 0.75,mar=c(0,0,1,0))
+}
+#Plot 3 ggplots for coltivations,gdp and population for the country given
+ggplots<-function(country_subset){
+  d=dim(country_subset)[2]
+  df <- xts(country_subset[,2:d],country_subset$Year)
+  list(ggplot(mapping = aes(x = Index, y = Value)) +
+    geom_line(data = fortify(df$cereals, melt = TRUE), aes(color = "cereals"),size=1.2) + 
+    #geom_line(data = fortify(df$fibres, melt = TRUE), aes(color = "fibres"),size=1.2) + 
+    geom_line(data = fortify(df$fr_veg, melt = TRUE), aes(color = "fr_veg"),size=1.2) +
+    geom_line(data = fortify(df$herbs, melt = TRUE), aes(color = "herbs"),size=1.2) +
+    geom_line(data = fortify(df$legumes, melt = TRUE), aes(color = "legumes"),size=1.2) +
+    geom_line(data = fortify(df$Live, melt = TRUE), aes(color = "Live"),size=1.2) +
+    geom_line(data = fortify(df$ms, melt = TRUE), aes(color = "ms"),size=1.2) +
+    geom_line(data = fortify(df$nuts, melt = TRUE), aes(color = "nuts"),size=1.2) +
+    geom_line(data = fortify(df$oils, melt = TRUE), aes(color = "oils"),size=1.2) +
+    geom_line(data = fortify(df$other, melt = TRUE), aes(color = "other"),size=1.2) +
+    geom_line(data = fortify(df$tubers, melt = TRUE), aes(color = "tubers"),size=1.2) +
+    xlab("Year") + ylab("Kg")+ggtitle('Production growth'),
+  ggplot(mapping = aes(x = Index, y = Value)) +
+    geom_line(data = fortify(df$gdp, melt = TRUE), aes(color = "GDP"),size=1.2) + 
+    xlab("Year") + ylab("Gdp")+ggtitle('GDP growth'),
+  ggplot(mapping = aes(x = Index, y = Value)) +
+    geom_line(data = fortify(df$pop, melt = TRUE), aes(color = "Population"),size=1.2) + 
+    xlab("Year") + ylab("Population")+ggtitle('Population growth'))
+}
+#Time Series linear model for gdp
+#If the R squared is very high but the value of DWTest is near 0 that means there is a positive autocorrelation among the residuals at lag 1
+#If checking the plot of the residuals they do not have a perfect harmonic behaviour but we can see a trend, it is a symbol of a positive autocorrelation
+tslm_gdp<-function(country){
+  gdp.ts <- ts(country$gdp)
+  fitts<- tslm(gdp.ts~trend)
+  print(summary(fitts))
+  print(dwtest(fitts))
+  ts.plot(country$gdp)
+  abline(fitts,col=3)
+  resfitts<- residuals(fitts)
+  plot(resfitts,xlab="Time", ylab="residuals")
+  Acf(resfitts)
+  AIC(fitts)
+}
+#transform quantitative variables in log scale
+logscale<-function(country){
+  country[country==0]=1
+  cols <- names(country)
+  cols<-cols[-1]#remove Year
+  country[cols] <- log(country[cols])
+  return(country)
+}
+#perform a selection of the features based on the vif
+lm_vif<-function(country,titlemain){
+  m1 <- lm(gdp~.-Year-pop, data=country)
+  vif_values <- vif(m1)
+  #create horizontal bar chart to display each VIF value
+  barplot(vif_values, main = paste("VIF Values:",titlemain), horiz = TRUE, col = "steelblue",las=1)
+  abline(v = 5, lwd = 3, lty = 2)
+  #keep only the variables with VIF<5
+  country<-country[,c("Year","gdp",names(vif_values[vif_values<5]))]
+  m1 <- lm(gdp~.-Year, data=country)
+  m2 <- step(m1, direction="both",trace = 0)
+  print(summary(m2))
+  print(AIC(m2))
+  print(dwtest(m2, alt="two.sided"))
+  #we should achieve a better DW value than the one obtained with the model based only on trend
+  ts.plot(country$gdp)
+  lines(fitted(m2), col=2)
+  #now we shouldn't see a trend on the residuals
+  checkresiduals(m2)
+  return(country)
+}
+#Auto Arima model
+get_arima<-function(country){
+  auto.a<- auto.arima(country$gdp)
+  plot(country$gdp)
+  fit<- fitted(auto.a)
+  lines(fit, col=2)
+  print(autoplot(forecast(auto.a)))
+  checkresiduals(auto.a) #if residuals are normally distributed OK
+  print(summary(auto.a))
+}
+#Auto Arima with external regressor
+get_arimax<-function(country){
+  columns = c("feature","AIC")
+  df_arimax <- data.frame(matrix(nrow = 0, ncol = length(columns)))
+  colnames(df_arimax) = columns
+  x<-colnames(country)[-c(1,2)]
+  for (i in x){
+    y=country[,names(country)==i]
+    armax<- auto.arima(country$gdp, xreg=y)
+    plot(country$gdp)
+    lines(fitted(armax), col=2)
+    checkresiduals(armax)
+    df_arimax[nrow(df_arimax) + 1,1] = i
+    df_arimax[nrow(df_arimax),2] = round(AIC(armax), digits = 2)
+  }
+  return(df_arimax)
+}
+#divide each feature by population
+bypop<-function(country){
+  cols <- names(country)
+  cols<-cols[-1]#remove Year
+  cols<-cols[cols != "pop"] #remove pop from the names
+  country[cols] <- country[cols]/country$pop #divide each feature by pop
+  cols<-cols[cols != "Live"]
+  cols<-cols[cols != "gdp"]
+  country[cols] <- country[cols]*1000 #multiply each feature by 1000 to get kg for person
+  country$pop<-country$pop/1000000 #get population in millions
+  nums <- vapply(country, is.numeric, FUN.VALUE = logical(1))
+  country[,nums] <- round(country[,nums], digits = 2) #keep only 2 digits
+  return(country)
+}
+```
+
+
+```{r}
+it<-agg_item("Italy")
+fr<-agg_item("France")
+us<-agg_item("United States")
+cn<-agg_item("China")
+br<-agg_item("Brazil")
+id<-agg_item("India")
+comment(it) <-"Italy"
+comment(fr) <-"France"
+comment(us) <-"United States"
+comment(cn) <-"China"
+comment(br) <-"Brazil"
+comment(id) <-"India"
+
+itpop<-bypop(it)
+frpop<-bypop(fr)
+uspop<-bypop(us)
+cnpop<-bypop(cn)
+idpop<-bypop(id)
+brpop<-bypop(br)
+comment(itpop) <-"Italy"
+comment(frpop) <-"France"
+comment(uspop) <-"United States"
+comment(cnpop) <-"China"
+comment(brpop) <-"Brazil"
+comment(idpop) <-"India"
+
+#since we are working with high value features, we could apply a log transformation
+it_log<-logscale(it)
+fr_log<-logscale(fr)
+us_log<-logscale(us)
+cn_log<-logscale(cn)
+id_log<-logscale(id)
+br_log<-logscale(br)
+comment(it_log) <-"Italy"
+comment(fr_log) <-"France"
+comment(us_log) <-"United States"
+comment(cn_log) <-"China"
+comment(br_log) <-"Brazil"
+comment(id_log) <-"India"
+```
+
+
+```{r}
+dfc<-function(countries,countries_names,title,title2,title3){
+  columns = c("Year","gdp","country") 
+  df1 = data.frame(matrix(nrow = 0, ncol = length(columns))) 
+  colnames(df1) = columns
+  i=1
+  for(x in countries){
+    dd<-x[,c("Year","gdp")]
+    dd$country<-countries_names[i]
+    i=i+1
+    df1<-rbind(df1,dd)
+  }
+  df2=data.frame(df1)
+  df2$Year<-as.character(format(df1$Year,'%Y'))
+  columns = c("Year",countries_names) 
+  df3 = data.frame(matrix(nrow = 60, ncol = length(columns))) 
+  colnames(df3) = columns
+  i=1
+  for(x in countries){
+      df3$Year<-x[,"Year"]
+      n=countries_names[i]
+      i=i+1
+      df3[,colnames(df3)==n]<-x[,"gdp"]
+  }
+  d=dim(df3)[2]
+  df3 <- xts(df3[,2:d],df3$Year)
+  list(df1 %>%
+  mutate(class = fct_reorder(country, gdp, .fun='median')) %>%
+  ggplot( aes(x=reorder(country, gdp), y=gdp, fill=country)) + 
+    geom_boxplot() +
+    xlab("Country") + ylab("Gdp")+ggtitle(title)+
+    theme(legend.position="none"),
+  df2 %>%
+  mutate(class = fct_reorder(Year, gdp, .fun='median')) %>%
+  ggplot( aes(x=reorder(Year, gdp), y=gdp, fill=Year)) + 
+    geom_boxplot() +
+    xlab("Year") + ylab("Gdp")+ggtitle(title2)+
+    theme(legend.position="none")+ theme(axis.text.x = element_text(angle = 90, vjust = 0.5,
+                                                                    hjust=1)),
+  ggplot(mapping = aes(x = Index, y = Value)) +
+    geom_line(data = fortify(df3$Italy, melt = TRUE), aes(color = "Italy"),size=1.2) + 
+    geom_line(data = fortify(df3$France, melt = TRUE), aes(color = "France"),size=1.2) + 
+    geom_line(data = fortify(df3$`United States`, melt = TRUE), aes(color = "United States"),size=1.2) +
+    geom_line(data = fortify(df3$China, melt = TRUE), aes(color = "China"),size=1.2) +
+    geom_line(data = fortify(df3$Brazil, melt = TRUE), aes(color = "India"),size=1.2) +
+    geom_line(data = fortify(df3$India, melt = TRUE), aes(color = "Brazil"),size=1.2) +
+    xlab("Year") + ylab("GDP")+ggtitle(title3))
+}
+
+dfc(list(it,fr,us,cn,id,br),c("Italy","France","United States","China","India","Brazil"),'Median GPD by Country','Median GPD by Year',"GDP growth")
+
+dfc(list(it_log,fr_log,us_log,cn_log,id_log,br_log),c("Italy","France","United States","China","India","Brazil"),'Median log(GPD) by Country','Median log(GPD) by Year',"Log(GDP) growth")
+
+dfc(list(itpop,frpop,uspop,cnpop,idpop,brpop),c("Italy","France","United States","China","India","Brazil"),'Median GPD Per Capita by Country','Median GPD Per Capita by Year',"GDP Per Capita growth")
+```
+
+
+```{r}
+#se passi in input 1 usa itpop,frpop, se passi 2 usa it_log, se passi 0 usa it
+countries_boxplots<-function(countries,y){
+  columns = c("Country","Item","Value") 
+  df = data.frame(matrix(nrow = 0, ncol = length(columns))) 
+  colnames(df) = columns
+  for(con in countries){
+    country<-agg_item(con)
+    if(y==1){
+      country<-bypop(country)
+    }
+    else if(y==2){
+      country<-logscale(country)
+    }
+    cols=colnames(country)[-1]
+    for(i in cols){
+      a<-rep(con,60)
+      b<-rep(i,60)
+      c<-country[,colnames(country)==i]
+      dd <- data.frame(Country=a,Item=b,Value=c)
+      df<-rbind(df,dd)
+    }
+  }
+  ggplot(df, aes(x=Item, y=Value, fill=Country)) + 
+    geom_boxplot() +
+    facet_wrap(~Item, scale="free")
+}
+countries_boxplots(c("Italy","France"),1)
+countries_boxplots(c("Brazil","India","China"),1)
+countries_boxplots(c("China","United States"),1)
+```
+
+
+```{r}
+#per Francia mettere # nella funzione ggplots per other
+#per Brasile mettere # nella funzione ggplots per ms
+#per USA mettere # nella funzione ggplots per fibres
+ggplots(itpop)
+```
+
+
+```{r}
+corcountry(itpop)
+```
+
+
+```{r}
+#check the data by histograms
+check_hist<-function(country){
+  par(mfrow=c(1,3))
+  for(i in c(2:4)){
+    hist(country[,i], col="orange", main=paste(colnames(country)[i]), xlab="")
+    }
+  par(mfrow=c(1,3))
+  for(i in c(5:7)){
+    hist(country[,i], col="orange", main=paste(colnames(country)[i]), xlab="")
+    }
+  par(mfrow=c(1,3))
+  for(i in c(8:10)){
+    hist(country[,i], col="orange", main=paste(colnames(country)[i]), xlab="")
+    }
+  par(mfrow=c(1,3))
+  for(i in c(11:13)){
+    hist(country[,i], col="orange", main=paste(colnames(country)[i]), xlab="")
+  }
+}
+check_hist(itpop)
+```
+
+
+```{r}
+#uso vif value=5 come soglia dato che sicuramente le variabili sono correlate tra loro
+#ho escluso la popolazione
+it_pop_restricted<-lm_vif(itpop,"Italy")
+```
+
+```{r}
+##Stepwise GAM
+
+#non capisco bene se usare Year come date o come numerico, si ottiene una differenza di AIC 
+#di 15 e la tabella Anova cambia un poco
+
+it_pop_restricted$Year<-as.numeric(it_pop_restricted$Year)
+#it_pop_restricted$Year<-as.Date(it_pop_restricted$Year)
+#Start with a linear model (df=1)
+g3 <- gam(gdp~. , data=it_pop_restricted)
+#Perform stepwise selection using gam scope
+sc = gam.scope(it_pop_restricted[,-2], response=2, arg=c("df=2","df=3","df=4"))
+g4<- step.Gam(g3, scope=sc, trace=F,direction="both")#step-wise regression using as starting point the previous model. Consider this particular scope sc with the defined degrees of freedom
+#per France usare direction=forward
+#per Brazil usare direction=backward
+#per China usare direction=forward
+summary(g4)
+AIC(g4)
+checkresiduals(g4)
+dwtest(g4)
+par(mfrow=c(3,3))
+plot(g4, se=T)
+```
+
+```{r}
+#ARIMA
+#test to see if the time series is stationary for the gdp
+#We reject the null hypothesis of stationary if the p-value is smaller than 0.05.
+#(the p-value is always >0.05 for all the countries, the series are not stationary)
+adf.test(it_pop_restricted$gdp)
+#check if the time series has white noise
+#check how long is the tail, how many lags it takes for the bars to get below the line of the white noise
+#other check for seasonality, the ACF plot usually reveals definitive repeated spikes at the multiples of the seasonal window.
+tsdisplay(it_pop_restricted$gdp)
+```
+
+```{r}
+get_arima(it_pop_restricted)
+#arima with lowest AIC is the best
+```
+
+```{r}
+armax_aics<-get_arimax(it_pop_restricted)
+armax_aics
+armax_aics[armax_aics$AIC==min(armax_aics$AIC),]$feature
+```
+
+
+```{r}
+#usare R quadro invece che aic che penalizzerà sempre gam perchè ha più parametri di arima e arimax a parte per india che usa solo other
+R2 = rsquare(g4, data = itpop)
+
+```
+
+
+
+
+
+
